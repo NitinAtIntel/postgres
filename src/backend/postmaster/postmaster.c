@@ -5899,7 +5899,6 @@ do_start_bgworker(RegisteredBgWorker *rw)
 				rw->rw_backend->pinned_cpu = cpu_list[total_cpus-available_cpus];
 				available_cpus--;
 				int affinity_result =sched_setaffinity(worker_pid, sizeof(cpu_set), &cpu_set);
-				//NITIN
 			}
 
 			/* add new worker to lists of backends */
