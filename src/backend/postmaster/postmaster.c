@@ -76,6 +76,8 @@
 #include <sys/param.h>
 #include <netdb.h>
 #include <limits.h>
+#include <sched.h>
+
 
 #ifdef HAVE_SYS_SELECT_H
 #include <sys/select.h>
@@ -179,12 +181,17 @@ typedef struct bkend
 {
 	pid_t		pid;			/* process id of backend */
 	int32		cancel_key;		/* cancel key for cancels for this backend */
+	int		pinned_cpu;		/* pinned cpu number, if any */
 	int			child_slot;		/* PMChildSlot for this backend, if any */
 	int			bkend_type;		/* child process flavor, see above */
 	bool		dead_end;		/* is it going to send an error and quit? */
 	bool		bgworker_notify;	/* gets bgworker start/stop notifications */
 	dlist_node	elem;			/* list link in BackendList */
 } Backend;
+
+#define total_cpus 224
+static int cpu_list[total_cpus];
+static int available_cpus = total_cpus;
 
 static dlist_head BackendList = DLIST_STATIC_INIT(BackendList);
 
@@ -2668,6 +2675,10 @@ InitProcessGlobals(void)
 			((uint64) MyStartTimestamp >> 20);
 	}
 	srandom(rseed);
+
+	for(int i = 0; i < total_cpus; i++) {
+		cpu_list[i] = i;
+	}
 }
 
 
@@ -3299,6 +3310,13 @@ CleanupBackgroundWorker(int pid,
 		snprintf(namebuf, MAXPGPATH, _("background worker \"%s\""),
 				 rw->rw_worker.bgw_type);
 
+
+		if(rw->rw_backend->bkend_type == BACKEND_TYPE_BGWORKER) {
+			if(rw->rw_backend->pinned_cpu != -1) {
+				cpu_list[total_cpus-available_cpus-1] = rw->rw_backend->pinned_cpu;
+				available_cpus++;
+			}
+		}
 
 		if (!EXIT_STATUS_0(exitstatus))
 		{
@@ -5872,7 +5890,18 @@ do_start_bgworker(RegisteredBgWorker *rw)
 			/* in postmaster, fork successful ... */
 			rw->rw_pid = worker_pid;
 			rw->rw_backend->pid = rw->rw_pid;
+			rw->rw_backend->pinned_cpu = -1;
 			ReportBackgroundWorkerPID(rw);
+			if(available_cpus > 0) {
+				cpu_set_t cpu_set;
+				CPU_ZERO(&cpu_set);
+				CPU_SET(cpu_list[total_cpus-available_cpus],&cpu_set);
+				rw->rw_backend->pinned_cpu = cpu_list[total_cpus-available_cpus];
+				available_cpus--;
+				int affinity_result =sched_setaffinity(worker_pid, sizeof(cpu_set), &cpu_set);
+				//NITIN
+			}
+
 			/* add new worker to lists of backends */
 			dlist_push_head(&BackendList, &rw->rw_backend->elem);
 #ifdef EXEC_BACKEND
