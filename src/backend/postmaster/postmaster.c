@@ -177,6 +177,7 @@
  * "special" child process type.  We use BackendList entries for any child
  * process there can be more than one of.)
  */
+//NITIN Updated structure to be able to track cpu used for pinning this backend
 typedef struct bkend
 {
 	pid_t		pid;			/* process id of backend */
@@ -189,6 +190,8 @@ typedef struct bkend
 	dlist_node	elem;			/* list link in BackendList */
 } Backend;
 
+//NITIN updated to track available cpus in an array
+//TODO Nitin dynamically determine cpu count
 #define total_cpus 224
 static int cpu_list[total_cpus];
 static int available_cpus = total_cpus;
@@ -3311,13 +3314,6 @@ CleanupBackgroundWorker(int pid,
 				 rw->rw_worker.bgw_type);
 
 
-		if(rw->rw_backend->bkend_type == BACKEND_TYPE_BGWORKER) {
-			if(rw->rw_backend->pinned_cpu != -1) {
-				cpu_list[total_cpus-available_cpus-1] = rw->rw_backend->pinned_cpu;
-				available_cpus++;
-			}
-		}
-
 		if (!EXIT_STATUS_0(exitstatus))
 		{
 			/* Record timestamp, so we know when to restart the worker. */
@@ -4287,14 +4283,25 @@ BackendStartup(Port *port)
 	}
 
 	/* in parent, successful fork */
-	ereport(DEBUG2,
-			(errmsg_internal("forked new backend, pid=%d socket=%d",
+	ereport(LOG,
+			(errmsg("forked new backend, pid=%d socket=%d",
 							 (int) pid, (int) port->sock)));
 
 	/*
 	 * Everything's been successful, it's safe to add this backend to our list
 	 * of backends.
 	 */
+	//NITIN updated to pin processes
+	bn->pinned_cpu = -1;
+	cpu_set_t cpu_set;
+	CPU_ZERO(&cpu_set);
+	CPU_SET(cpu_list[total_cpus-available_cpus],&cpu_set);
+	bn->pinned_cpu = cpu_list[total_cpus-available_cpus];
+	(available_cpus < 1) ? available_cpus = total_cpus : available_cpus--;
+	int affinity_result =sched_setaffinity(pid, sizeof(cpu_set), &cpu_set);
+	ereport(LOG,
+			(errmsg("Set process affinity in BackendStartup result %d for pinned cpu %d pid %d, remaining cpus %d", affinity_result, bn->pinned_cpu, pid, available_cpus)));
+	 	
 	bn->pid = pid;
 	bn->bkend_type = BACKEND_TYPE_NORMAL;	/* Can change later to WALSND */
 	dlist_push_head(&BackendList, &bn->elem);
@@ -4683,7 +4690,6 @@ internal_forkexec(int argc, char *argv[], Port *port)
 			exit(1);
 		}
 	}
-
 	return pid;					/* Parent returns pid, or -1 on fork failure */
 }
 #else							/* WIN32 */
@@ -5890,16 +5896,17 @@ do_start_bgworker(RegisteredBgWorker *rw)
 			/* in postmaster, fork successful ... */
 			rw->rw_pid = worker_pid;
 			rw->rw_backend->pid = rw->rw_pid;
+			//NITIN updated to pin processes
 			rw->rw_backend->pinned_cpu = -1;
 			ReportBackgroundWorkerPID(rw);
-			if(available_cpus > 0) {
-				cpu_set_t cpu_set;
-				CPU_ZERO(&cpu_set);
-				CPU_SET(cpu_list[total_cpus-available_cpus],&cpu_set);
-				rw->rw_backend->pinned_cpu = cpu_list[total_cpus-available_cpus];
-				available_cpus--;
-				int affinity_result =sched_setaffinity(worker_pid, sizeof(cpu_set), &cpu_set);
-			}
+			cpu_set_t cpu_set;
+			CPU_ZERO(&cpu_set);
+			CPU_SET(cpu_list[total_cpus-available_cpus],&cpu_set);
+			rw->rw_backend->pinned_cpu = cpu_list[total_cpus-available_cpus];
+			(available_cpus < 1) ? available_cpus = total_cpus : available_cpus--;
+			int affinity_result =sched_setaffinity(worker_pid, sizeof(cpu_set), &cpu_set);
+			ereport(LOG,
+			(errmsg("Pinned process in do_start_bgworker afinity result %d for pinned cpu %d pid %d, remaining cpus %d", affinity_result, rw->rw_backend->pinned_cpu, worker_pid, available_cpus)));
 
 			/* add new worker to lists of backends */
 			dlist_push_head(&BackendList, &rw->rw_backend->elem);
