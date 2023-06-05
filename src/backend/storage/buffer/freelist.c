@@ -38,7 +38,12 @@ typedef struct
 	 */
 	pg_atomic_uint32 nextVictimBuffer;
 
+	unsigned char pad1 [128];
+
 	int			firstFreeBuffer;	/* Head of list of unused buffers */
+
+	unsigned char pad2 [128];
+
 	int			lastFreeBuffer; /* Tail of list of unused buffers */
 
 	/*
@@ -52,6 +57,8 @@ typedef struct
 	 */
 	uint32		completePasses; /* Complete cycles of the clock sweep */
 	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
+
+	unsigned char pad3 [128];
 
 	/*
 	 * Bgworker process to be notified upon activity or -1 if none. See
